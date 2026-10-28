@@ -23,7 +23,7 @@
      tokens in this file: it is public and visible to everyone.
      ======================================================== */
   const CONFIG = {
-    backendUrl: "",
+    backendUrl: "https://weathered-hill-176a.ericofelixlopes.workers.dev",
     storageKey: "cloudtorrent.settings.v1",
     maxMagnetLength: 8192
   };
@@ -399,20 +399,48 @@
   }
 
   /* ---- Backend status ---- */
-  function renderBackendStatus() {
+  async function renderBackendStatus() {
     const configured = Service.isBackendConfigured();
     const pill = $("#backend-pill");
     const topbar = $("#topbar-status");
     pill.className = "pill pill-warn";
     topbar.className = "pill pill-warn";
-    if (configured) {
-      pill.textContent = "Not verified";
-      topbar.textContent = "Backend not verified";
-      $("#backend-text").textContent =
-        "A backend URL is set, but this prototype does not verify the connection yet. Nothing is downloaded until the integration is implemented and tested.";
-    } else {
+
+    if (!configured) {
       pill.textContent = "Not connected";
       topbar.textContent = "Backend not connected";
+      $("#backend-text").textContent =
+        "No backend URL is configured. Demo data is local only; no torrent is being downloaded.";
+      return;
+    }
+
+    pill.textContent = "Checking…";
+    topbar.textContent = "Checking backend…";
+    $("#backend-text").textContent = "Checking the CloudTorrent API connection…";
+
+    try {
+      const response = await fetch(CONFIG.backendUrl.replace(/\/$/, "") + "/api/status", {
+        method: "GET",
+        headers: { "Accept": "application/json" }
+      });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const data = await response.json();
+      if (data.ok !== true || data.service !== "CloudTorrent API") {
+        throw new Error("Unexpected API response");
+      }
+      pill.className = "pill pill-ok";
+      topbar.className = "pill pill-ok";
+      pill.textContent = "API online";
+      topbar.textContent = "API online";
+      $("#backend-text").textContent =
+        "The Cloudflare API is reachable. Torrent submission, real files, and downloads are not implemented yet; the displayed sample items remain demo data.";
+    } catch (error) {
+      pill.className = "pill pill-warn";
+      topbar.className = "pill pill-warn";
+      pill.textContent = "Connection failed";
+      topbar.textContent = "Backend unavailable";
+      $("#backend-text").textContent =
+        "The configured backend could not be verified. Check the Worker deployment and try again. Demo data is local only; no torrent was sent.";
     }
   }
 
@@ -956,7 +984,7 @@
     bindFiles();
     bindActivity();
     bindGlobal();
-    renderBackendStatus();
+    await renderBackendStatus();
 
     window.addEventListener("hashchange", () => route(true));
     route(false);

@@ -95,169 +95,180 @@
       return CONFIG.backendUrl.trim() !== "";
     },
 
-    /**
-     * Validates a magnet URI. Runs entirely in the browser and is real validation.
-     * Returns { valid: true, infoHash, hashType, name, trackerCount }
-     *      or { valid: false, error }.
-     */
     validateMagnet(magnetUri) {
       const text = typeof magnetUri === "string" ? magnetUri.trim() : "";
-
-      if (!text) {
-        return { valid: false, error: "Paste a magnet link first." };
-      }
-      if (text.length > CONFIG.maxMagnetLength) {
-        return { valid: false, error: "That link is too long to be a normal magnet link." };
-      }
-      if (/\s/.test(text)) {
-        return { valid: false, error: "Magnet links can't contain spaces or line breaks. Check that you copied the whole link." };
-      }
-      if (/^https?:\/\//i.test(text) || /\.torrent(\?|$)/i.test(text)) {
-        return { valid: false, error: "That looks like a web address or a .torrent file. Please paste a magnet link that starts with magnet:?" };
-      }
-      if (!/^magnet:\?/i.test(text)) {
-        return { valid: false, error: "That doesn't look like a magnet link. It should start with magnet:?" };
-      }
-
-      // Split the query string manually and decode each value safely.
-      const query = text.slice(text.indexOf("?") + 1);
+      if (!text) return { valid: false, error: "Paste a magnet link first." };
+      if (text.length > CONFIG.maxMagnetLength) return { valid: false, error: "That link is too long to be a normal magnet link." };
+      if (/\s/.test(text)) return { valid: false, error: "Magnet links can't contain spaces or line breaks. Check that you copied the whole link." };
+      if (/^https?:\/\//i.test(text) || /\.torrent(\?|$)/i.test(text)) return { valid: false, error: "That looks like a web address or a .torrent file. Please paste a magnet link that starts with magnet:?" };
+      if (!/^magnet:\?/i.test(text)) return { valid: false, error: "That doesn't look like a magnet link. It should start with magnet:?" };
       const params = {};
-      for (const part of query.split("&")) {
+      for (const part of text.slice(text.indexOf("?") + 1).split("&")) {
         if (!part) continue;
         const eq = part.indexOf("=");
-        const rawKey = eq === -1 ? part : part.slice(0, eq);
-        const rawValue = eq === -1 ? "" : part.slice(eq + 1);
-        const key = rawKey.toLowerCase();
-        let value = rawValue;
-        try {
-          value = decodeURIComponent(rawValue.replace(/\+/g, " "));
-        } catch {
-          // Keep the raw value if it is not valid percent-encoding.
-        }
+        const key = (eq === -1 ? part : part.slice(0, eq)).toLowerCase();
+        let value = eq === -1 ? "" : part.slice(eq + 1);
+        try { value = decodeURIComponent(value.replace(/\+/g, " ")); } catch {}
         (params[key] = params[key] || []).push(value);
       }
-
       const topics = params.xt || [];
-      if (topics.length === 0) {
-        return { valid: false, error: "The link is missing its xt parameter (the torrent identifier). It may have been cut off when copying." };
-      }
-
-      let infoHash = null;
-      let hashType = null;
-      let sawTopic = false;
-
+      if (!topics.length) return { valid: false, error: "The link is missing its xt parameter (the torrent identifier). It may have been cut off when copying." };
+      let infoHash = null, hashType = null, sawTopic = false;
       for (const topic of topics) {
         const btih = /^urn:btih:(.+)$/i.exec(topic);
         const btmh = /^urn:btmh:(.+)$/i.exec(topic);
         if (btih) {
           sawTopic = true;
-          const hash = btih[1];
-          if (/^[0-9a-f]{40}$/i.test(hash) || /^[a-z2-7]{32}$/i.test(hash)) {
-            infoHash = hash.toLowerCase();
-            hashType = "btih";
-            break;
+          if (/^[0-9a-f]{40}$/i.test(btih[1]) || /^[a-z2-7]{32}$/i.test(btih[1])) {
+            infoHash = btih[1].toLowerCase(); hashType = "btih"; break;
           }
         } else if (btmh) {
           sawTopic = true;
-          if (/^1220[0-9a-f]{64}$/i.test(btmh[1])) {
-            infoHash = btmh[1].toLowerCase();
-            hashType = "btmh";
-            break;
-          }
+          if (/^1220[0-9a-f]{64}$/i.test(btmh[1])) { infoHash = btmh[1].toLowerCase(); hashType = "btmh"; break; }
         }
       }
-
-      if (!infoHash) {
-        if (!sawTopic) {
-          return { valid: false, error: "The xt parameter should start with urn:btih: followed by the torrent hash." };
-        }
-        return { valid: false, error: "The torrent hash looks wrong. It should be 40 hexadecimal characters (or 32 Base32 characters). The link may be incomplete." };
-      }
-
-      return {
-        valid: true,
-        infoHash,
-        hashType,
-        name: params.dn && params.dn[0] ? params.dn[0] : "",
-        trackerCount: (params.tr || []).length
-      };
+      if (!infoHash) return { valid: false, error: !sawTopic ? "The xt parameter should start with urn:btih: followed by the torrent hash." : "The torrent hash looks wrong. The link may be incomplete." };
+      return { valid: true, infoHash, hashType, name: params.dn?.[0] || "", trackerCount: (params.tr || []).length };
     },
 
-    /**
-     * Submits a magnet to the backend.
-     * Currently NEVER starts a download: no backend exists yet.
-     * Returns { ok, code, message, validation? }.
-     *
-     * FUTURE: when a backend exists, replace the final return with a call such as:
-     *   const res = await fetch(CONFIG.backendUrl + "/torrents", {
-     *     method: "POST",
-     *     headers: { "Content-Type": "application/json" },
-     *     body: JSON.stringify({ magnet: magnetUri })
-     *   });
-     * Authentication must be handled by the backend (for example with a
-     * session cookie), never by a secret stored in this file.
-     */
+    async authenticate() {
+      let password = sessionStorage.getItem("cloudtorrent.sessionPassword");
+      if (!password) {
+        password = window.prompt("Enter your CloudTorrent password to connect to your private TorBox account:");
+        if (!password) throw new Error("Login cancelled.");
+      }
+      const res = await fetch(CONFIG.backendUrl + "/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        sessionStorage.removeItem("cloudtorrent.sessionPassword");
+        throw new Error(data.error || "Login failed. Check your CloudTorrent password.");
+      }
+      sessionStorage.setItem("cloudtorrent.sessionPassword", password);
+      return password;
+    },
+
+    async api(path, options = {}) {
+      if (!this.isBackendConfigured()) throw new Error("Backend URL is not configured.");
+      let password = sessionStorage.getItem("cloudtorrent.sessionPassword");
+      const headers = { ...(options.headers || {}) };
+      if (password) headers["X-CloudTorrent-Password"] = password;
+      let response = await fetch(CONFIG.backendUrl + path, { ...options, headers });
+      if (response.status === 401 && path !== "/api/login") {
+        password = await this.authenticate();
+        headers["X-CloudTorrent-Password"] = password;
+        response = await fetch(CONFIG.backendUrl + path, { ...options, headers });
+      }
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) throw new Error(data.error || data.message || "Backend request failed.");
+      return data;
+    },
+
+    async checkStatus() {
+      try {
+        const data = await this.api("/api/status");
+        return !!data.ok;
+      } catch { return false; }
+    },
+
     async addTorrent(magnetUri) {
-      const validation = Service.validateMagnet(magnetUri);
-      if (!validation.valid) {
-        return { ok: false, code: "INVALID_MAGNET", message: validation.error };
+      const validation = this.validateMagnet(magnetUri);
+      if (!validation.valid) return { ok: false, code: "INVALID_MAGNET", message: validation.error };
+      try {
+        if (!sessionStorage.getItem("cloudtorrent.sessionPassword")) await this.authenticate();
+        const data = await this.api("/api/torrents", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ magnet: magnetUri })
+        });
+        return { ok: true, message: data.message || "Torrent sent to TorBox.", torrent: data.torrent, validation };
+      } catch (error) {
+        return { ok: false, code: "BACKEND_ERROR", message: error.message || "Could not submit torrent.", validation };
       }
-      if (!Service.isBackendConfigured()) {
-        return {
-          ok: false,
-          code: "BACKEND_NOT_CONFIGURED",
-          message: "No backend is connected, so nothing was sent or downloaded.",
-          validation
-        };
-      }
-      return {
-        ok: false,
-        code: "NOT_IMPLEMENTED",
-        message: "A backend URL is set, but the integration has not been implemented yet.",
-        validation
-      };
     },
 
-    /**
-     * Returns the list of torrent jobs.
-     * Demo jobs are included only when includeDemo is true.
-     * FUTURE: when a backend exists, fetch real jobs and return them with demo: false.
-     */
     async getTorrentJobs({ includeDemo = false } = {}) {
-      const realJobs = []; // FUTURE: fetch from the backend.
+      let realJobs = [];
+      try {
+        if (sessionStorage.getItem("cloudtorrent.sessionPassword")) {
+          const data = await this.api("/api/torrents");
+          realJobs = (data.torrents || []).map((t) => ({
+            id: "torbox-" + t.id,
+            torboxId: String(t.id),
+            name: t.name || ("Torrent " + t.id),
+            status: normalizeStatus(t),
+            progress: Number(t.progress ?? t.download_percent ?? 0),
+            totalBytes: Number(t.size ?? t.total_size ?? 0),
+            speedBps: Number(t.download_speed ?? t.download_speed_bytes ?? 0),
+            errorMessage: t.error || "",
+            demo: false
+          }));
+        }
+      } catch (error) { console.warn("CloudTorrent torrent list:", error); }
       const demoJobs = includeDemo ? DEMO_JOBS.map((job) => ({ ...job })) : [];
       return [...realJobs, ...demoJobs];
     },
 
-    /**
-     * Returns files. Pass a jobId to get one job's files, or null for all files.
-     * FUTURE: fetch real files from the backend.
-     */
     async getTorrentFiles(jobId = null, { includeDemo = false } = {}) {
-      const realFiles = []; // FUTURE: fetch from the backend.
+      let realFiles = [];
+      try {
+        if (sessionStorage.getItem("cloudtorrent.sessionPassword")) {
+          const suffix = jobId && String(jobId).startsWith("torbox-") ? "?torrentId=" + encodeURIComponent(String(jobId).replace("torbox-", "")) : "";
+          const data = await this.api("/api/files" + suffix);
+          realFiles = (data.files || []).map((f) => ({
+            id: "torbox-file-" + f.torrentId + "-" + f.id,
+            torboxId: String(f.id),
+            torrentId: String(f.torrentId),
+            jobId: "torbox-" + f.torrentId,
+            name: f.name || ("File " + f.id),
+            type: fileType(f.name),
+            size: Number(f.size || 0),
+            itemCount: f.itemCount,
+            demo: false
+          }));
+        }
+      } catch (error) { console.warn("CloudTorrent file list:", error); }
       let demoFiles = includeDemo ? DEMO_FILES.map((file) => ({ ...file })) : [];
       if (jobId) demoFiles = demoFiles.filter((file) => file.jobId === jobId);
       return [...realFiles, ...demoFiles];
     },
 
-    /**
-     * Requests a file download. Currently always unavailable.
-     * FUTURE: return a short-lived download URL created by the backend.
-     */
     async downloadFile(fileId) {
-      return {
-        ok: false,
-        code: "BACKEND_NOT_CONFIGURED",
-        fileId,
-        message: "Downloads are unavailable until a backend is connected and the file really exists."
-      };
+      const match = /^torbox-file-(\d+)-(\d+)$/.exec(String(fileId));
+      if (!match) return { ok: false, code: "DEMO_FILE", message: "This is demonstration data, not a real downloadable file." };
+      try {
+        const data = await this.api("/api/download?torrentId=" + encodeURIComponent(match[1]) + "&fileId=" + encodeURIComponent(match[2]));
+        if (data.url) window.open(data.url, "_blank", "noopener");
+        return { ok: true, message: "Download link opened." };
+      } catch (error) { return { ok: false, message: error.message || "Download unavailable." }; }
     },
 
-    /** Demo events for the Activity view. Real events are created by the UI. */
     async getActivity({ includeDemo = false } = {}) {
       return includeDemo ? DEMO_EVENTS.map((event) => ({ ...event })) : [];
     }
   };
+
+  function normalizeStatus(t) {
+    const s = String(t.download_state || t.status || "").toLowerCase();
+    if (s.includes("complete") || s === "cached") return "completed";
+    if (s.includes("error") || s.includes("fail")) return "error";
+    if (s.includes("queue") || s.includes("wait")) return "waiting";
+    return "downloading";
+  }
+
+  function fileType(name = "") {
+    const ext = String(name).split(".").pop().toLowerCase();
+    if (["mp4","mkv","mov","avi","webm"].includes(ext)) return "video";
+    if (["mp3","wav","flac","m4a","aac"].includes(ext)) return "audio";
+    if (["zip","rar","7z","gz","tar"].includes(ext)) return "archive";
+    if (["pdf","doc","docx","txt","epub"].includes(ext)) return "document";
+    if (["png","jpg","jpeg","gif","webp","svg"].includes(ext)) return "image";
+    if (["iso","img","dmg"].includes(ext)) return "disk";
+    return "document";
+  }
 
   /* ========================================================
      4. HELPERS
@@ -833,12 +844,9 @@
         setFeedback("error", result.message);
         addEvent("Magnet link rejected: " + result.message, "error");
       } else {
-        setFeedback(
-          "success",
-          "Valid magnet link" + label + ". It was checked in your browser only. Nothing was sent or downloaded because no backend is connected."
-        );
-        addEvent("Magnet link validated locally" + label + ". Not submitted: no backend is connected.", "info");
-        toast("Valid magnet link. Not submitted: backend not connected.");
+        setFeedback("error", result.message || "The torrent could not be submitted to the backend.");
+        addEvent("Torrent not submitted" + label + ": " + (result.message || "backend error"), "error");
+        toast(result.message || "Torrent not submitted.");
       }
     } catch {
       setFeedback("error", "Something went wrong while checking the link. Please try again.");

@@ -1,49 +1,147 @@
+/**
+ * CloudTorrent Worker — TorBox integration
+ * Required Cloudflare secrets:
+ *   TORBOX_API_KEY
+ *   CLOUDTORRENT_PASSWORD
+ *
+ * Keep these values in Cloudflare Secrets, never in frontend files.
+ */
+const FRONTEND_ORIGIN = "https://ricsnotahacker.github.io";
+const TORBOX_BASE = "https://api.torbox.app/v1/api";
 
 export default {
   async fetch(request, env) {
+    const origin = request.headers.get("Origin") || "";
     const corsHeaders = {
-      "Access-Control-Allow-Origin": "https://ricsnotahacker.github.io",
+      "Access-Control-Allow-Origin": FRONTEND_ORIGIN,
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-CloudTorrent-Password",
+      "Vary": "Origin",
+      "Cache-Control": "no-store"
     };
+    const respond = (data, status = 200) => new Response(JSON.stringify(data), {
+      status,
+      headers: { ...corsHeaders, "Content-Type": "application/json; charset=utf-8" }
+    });
 
-    const respond = (data, status = 200) =>
-      new Response(JSON.stringify(data), {
-        status,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
-      });
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
 
     const url = new URL(request.url);
-
-    if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: corsHeaders });
-    }
-
-    if (url.pathname === "/api/status") {
+    if (url.pathname === "/api/status" && request.method === "GET") {
       return respond({ ok: true, service: "CloudTorrent API" });
     }
 
-    if (request.headers.get("Origin") !== "https://ricsnotahacker.github.io") {
-      return respond({ error: "Origin not allowed" }, 403);
-    }
+    if (origin !== FRONTEND_ORIGIN) return respond({ ok: false, error: "Origin not allowed" }, 403);
 
     if (url.pathname === "/api/login" && request.method === "POST") {
       const body = await request.json().catch(() => ({}));
-
-      if (!env.CLOUDTORRENT_PASSWORD ||
+      if (!env.CLOUDTORRENT_PASSWORD || typeof body.password !== "string" ||
           body.password !== env.CLOUDTORRENT_PASSWORD) {
-        return respond({ error: "Invalid password" }, 401);
+        return respond({ ok: false, error: "Invalid CloudTorrent password." }, 401);
       }
-
-      return respond({
-        ok: true,
-        message: "Login successful. API authentication will be added next."
-      });
+      if (!env.TORBOX_API_KEY) return respond({ ok: false, error: "TORBOX_API_KEY is not configured in Cloudflare." }, 503);
+      return respond({ ok: true, message: "Authenticated." });
     }
 
-    return respond({ error: "Not found" }, 404);
-  },
+    const suppliedPassword = request.headers.get("X-CloudTorrent-Password") || "";
+    if (!env.CLOUDTORRENT_PASSWORD || suppliedPassword !== env.CLOUDTORRENT_PASSWORD) {
+      return respond({ ok: false, error: "Please sign in with your CloudTorrent password." }, 401);
+    }
+    if (!env.TORBOX_API_KEY) return respond({ ok: false, error: "TORBOX_API_KEY is not configured in Cloudflare." }, 503);
+
+    try {
+      if (url.pathname === "/api/torrents" && request.method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        if (typeof body.magnet !== "string" || !body.magnet.startsWith("magnet:?")) {
+          return respond({ ok: false, error: "A valid magnet link is required." }, 400);
+        }
+        const form = new FormData();
+        form.set("magnet", body.magnet);
+        form.set("seed", "1");
+        const upstream = await fetch(`${TORBOX_BASE}/torrents/createtorrent`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}` },
+          body: form
+        });
+        const result = await upstream.json().catch(() => ({}));
+        if (!upstream.ok || result.success === false) {
+          return respond({ ok: false, error: safeMessage(result, "TorBox rejected the torrent."), details: result.error || result.detail || undefined }, upstream.status >= 400 ? upstream.status : 502);
+        }
+        return respond({ ok: true, message: "Torrent submitted to TorBox.", torrent: result.data || result });
+      }
+
+      if (url.pathname === "/api/torrents" && request.method === "GET") {
+        const upstreamUrl = new URL(`${TORBOX_BASE}/torrents/mylist`);
+        upstreamUrl.searchParams.set("bypass_cache", "true");
+        const upstream = await fetch(upstreamUrl, {
+          headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}` }
+        });
+        const result = await upstream.json().catch(() => ({}));
+        if (!upstream.ok || result.success === false) return respond({ ok: false, error: safeMessage(result, "Could not retrieve torrents from TorBox.") }, upstream.status >= 400 ? upstream.status : 502);
+        const list = Array.isArray(result.data) ? result.data : (Array.isArray(result) ? result : []);
+        return respond({ ok: true, torrents: list });
+      }
+
+      if (url.pathname === "/api/files" && request.method === "GET") {
+        const torrentId = url.searchParams.get("torrentId");
+        const upstreamUrl = new URL(`${TORBOX_BASE}/torrents/mylist`);
+        upstreamUrl.searchParams.set("bypass_cache", "true");
+        if (torrentId && /^\d+$/.test(torrentId)) upstreamUrl.searchParams.set("id", torrentId);
+        const upstream = await fetch(upstreamUrl, {
+          headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}` }
+        });
+        const result = await upstream.json().catch(() => ({}));
+        if (!upstream.ok || result.success === false) return respond({ ok: false, error: safeMessage(result, "Could not retrieve files from TorBox.") }, upstream.status >= 400 ? upstream.status : 502);
+        const torrents = Array.isArray(result.data) ? result.data : (result.data ? [result.data] : []);
+        const files = [];
+        for (const torrent of torrents) {
+          const tid = String(torrent.id ?? torrent.torrent_id ?? "");
+          if (torrentId && tid !== torrentId) continue;
+          const items = Array.isArray(torrent.files) ? torrent.files : [];
+          for (const file of items) {
+            files.push({
+              id: String(file.id ?? file.file_id ?? ""),
+              torrentId: tid,
+              name: file.name || file.short_name || `File ${file.id ?? ""}`,
+              size: Number(file.size || 0),
+              itemCount: 0
+            });
+          }
+        }
+        return respond({ ok: true, files });
+      }
+
+      if (url.pathname === "/api/download" && request.method === "GET") {
+        const torrentId = url.searchParams.get("torrentId");
+        const fileId = url.searchParams.get("fileId");
+        if (!torrentId || !/^\d+$/.test(torrentId) || !fileId || !/^\d+$/.test(fileId)) {
+          return respond({ ok: false, error: "Valid torrentId and fileId are required." }, 400);
+        }
+        const downloadUrl = new URL(`${TORBOX_BASE}/torrents/requestdl`);
+        downloadUrl.searchParams.set("torrent_id", torrentId);
+        downloadUrl.searchParams.set("file_id", fileId);
+        downloadUrl.searchParams.set("token", env.TORBOX_API_KEY);
+        const upstream = await fetch(downloadUrl, { headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}` } });
+        const result = await upstream.json().catch(() => null);
+        if (!upstream.ok) return respond({ ok: false, error: safeMessage(result, "TorBox could not create a download link.") }, upstream.status);
+        const link = result?.data;
+        const downloadLink = typeof link === "string" ? link : (link?.url || link?.download_url || result?.url);
+        if (!downloadLink || typeof downloadLink !== "string") {
+          return respond({ ok: false, error: safeMessage(result, "TorBox did not return a download URL.") }, 502);
+        }
+        return respond({ ok: true, url: downloadLink });
+      }
+
+      return respond({ ok: false, error: "Not found." }, 404);
+    } catch (error) {
+      return respond({ ok: false, error: "Unexpected backend error. Check the Worker logs." }, 500);
+    }
+  }
+};
+
+function safeMessage(result, fallback) {
+  if (typeof result?.detail === "string") return result.detail.slice(0, 300);
+  if (typeof result?.error === "string") return result.error.slice(0, 300);
+  if (typeof result?.message === "string") return result.message.slice(0, 300);
+  return fallback;
 }

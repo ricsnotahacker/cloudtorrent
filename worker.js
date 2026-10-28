@@ -46,4 +46,4 @@ export default {
 
     return respond({ error: "Not found" }, 404);
   },
-};
+}

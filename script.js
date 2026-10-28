@@ -19,8 +19,8 @@
 
   /* ========================================================
      1. CONFIGURATION
-     Leave backendUrl empty. Never put API keys, passwords or
-     tokens in this file: it is public and visible to everyone.
+     Point to the Cloudflare Worker. Never put API keys, passwords
+     or tokens in this public frontend file.
      ======================================================== */
   const CONFIG = {
     backendUrl: "https://weathered-hill-176a.ericofelixlopes.workers.dev",
@@ -356,7 +356,7 @@
     accent: "violet",
     compact: false,
     reduceMotion: prefersReducedMotion,
-    demo: true
+    demo: false
   };
 
   let settings = { ...defaultSettings };
@@ -444,7 +444,7 @@
       pill.textContent = "API online";
       topbar.textContent = "API online";
       $("#backend-text").textContent =
-        "The Cloudflare API is reachable. Torrent submission, real files, and downloads are not implemented yet; the displayed sample items remain demo data.";
+        "The Cloudflare API is reachable. Sign in when prompted to submit torrents and load your TorBox files. Demo items are controlled in Settings.";
     } catch (error) {
       pill.className = "pill pill-warn";
       topbar.className = "pill pill-warn";
@@ -497,12 +497,15 @@
     if (job.status === "error") {
       menu.append(
         menuItem("Retry", () => {
-          toast("Retry is unavailable until a backend is connected.");
+          toast("To retry, submit the magnet link again after checking the TorBox error.");
         })
       );
     }
 
-    menu.append(menuItem("Download (needs backend)", () => {}, true));
+    menu.append(menuItem("Open My Files to download", () => {
+      window.location.hash = "#files";
+      toast("Choose a real TorBox file in My Files to open its download link.");
+    }));
 
     if (job.demo) {
       menu.append(
@@ -635,11 +638,13 @@
       const download = el("button", {
         type: "button",
         class: "menu-btn",
-        title: "Download unavailable until a backend is connected",
-        "aria-label": "Download " + file.name + " (unavailable until a backend is connected)",
-        "aria-disabled": "true"
+        title: file.demo ? "Demo files cannot be downloaded" : "Download " + file.name,
+        "aria-label": "Download " + file.name
       }, icon("i-download"));
-      download.style.opacity = "0.55";
+      if (file.demo) {
+        download.disabled = true;
+        download.style.opacity = "0.55";
+      }
       download.addEventListener("click", async () => {
         const result = await Service.downloadFile(file.id);
         toast(result.message);
@@ -669,7 +674,7 @@
     if (isEmpty) {
       if (total === 0) {
         $("#files-empty-title").textContent = "No files yet";
-        $("#files-empty-text").textContent = "Completed downloads will be listed here once a backend is connected.";
+        $("#files-empty-text").textContent = "No files are listed yet. Sign in and add a torrent, then refresh this view.";
       } else {
         $("#files-empty-title").textContent = "No matching files";
         $("#files-empty-text").textContent = "Nothing matches “" + truncate(query, 40) + "”. Try a different search.";

@@ -55,14 +55,26 @@ export default {
 
     try {
       if (url.pathname === "/api/torrents" && request.method === "POST") {
-        const body = await request.json().catch(() => ({}));
-        const magnet = typeof body.magnet === "string" ? body.magnet.trim() : "";
-        if (!/^magnet:\?/i.test(magnet) || !/([?&])xt=urn:(btih|btmh):/i.test(magnet)) {
-          return respond({ ok: false, error: "A valid magnet link with a torrent identifier is required." }, 400);
-        }
+        const contentType = request.headers.get("Content-Type") || "";
         const form = new FormData();
-        form.set("magnet", magnet);
-        form.set("seed", "1");
+        if (contentType.includes("multipart/form-data")) {
+          const incoming = await request.formData();
+          const file = incoming.get("file");
+          if (!(file instanceof File) || !file.name.toLowerCase().endsWith(".torrent") || file.size === 0) {
+            return respond({ ok: false, error: "Choose a valid, non-empty .torrent file." }, 400);
+          }
+          if (file.size > 10 * 1024 * 1024) return respond({ ok: false, error: "The .torrent file exceeds the 10 MB limit." }, 413);
+          form.set("file", file, file.name);
+          form.set("seed", "1");
+        } else {
+          const body = await request.json().catch(() => ({}));
+          const magnet = typeof body.magnet === "string" ? body.magnet.trim() : "";
+          if (!/^magnet:\?/i.test(magnet) || !/([?&])xt=urn:(btih|btmh):/i.test(magnet)) {
+            return respond({ ok: false, error: "A valid magnet link with a torrent identifier is required." }, 400);
+          }
+          form.set("magnet", magnet);
+          form.set("seed", "1");
+        }
         const upstream = await fetch(`${TORBOX_BASE}/torrents/createtorrent`, {
           method: "POST",
           headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}` },

@@ -1269,20 +1269,58 @@ html[data-theme="light"] .slider::before{box-shadow:0 1px 3px rgba(20,23,42,.35)
     button.dataset.busy = "1";
     button.disabled = true;
     button.setAttribute("aria-busy", "true");
+
+    // Open the tab immediately during the click, before awaiting the API.
+    // This avoids Safari/iOS blocking window.open after an asynchronous request.
+    let downloadWindow = null;
     try {
-      const result = await Service.downloadFile({ torrentId: file.torrentId, fileId: file.fileId });
+      downloadWindow = window.open("about:blank", "_blank");
+      if (downloadWindow) {
+        try { downloadWindow.opener = null; } catch { /* ignore */ }
+      }
+
+      const result = await Service.downloadFile({
+        torrentId: file.torrentId,
+        fileId: file.fileId
+      });
+
       if (!result.ok) {
+        if (downloadWindow && !downloadWindow.closed) downloadWindow.close();
         toast(result.message);
-        addEvent("Couldn't get a download link for " + truncate(file.name, 80) + ": " + result.message, "error");
+        addEvent(
+          "Couldn't get a download link for " +
+            truncate(file.name, 80) + ": " + result.message,
+          "error"
+        );
         return;
       }
-      const win = window.open(result.url, "_blank");
-      if (win) {
-        try { win.opener = null; } catch { /* ignore */ }
-        addEvent("Opened the download link for " + truncate(file.name, 80) + ".", "info");
+
+      if (downloadWindow && !downloadWindow.closed) {
+        downloadWindow.location.href = result.url;
+        addEvent(
+          "Opened the download link for " +
+            truncate(file.name, 80) + ".",
+          "info"
+        );
       } else {
-        toast("Your browser blocked the download window.", { href: result.url, hrefText: "Tap to open the download" });
+        // If the browser blocks the tab, show a manual link instead.
+        toast("Tap the link below to download your file.", {
+          href: result.url,
+          hrefText: "Tap to open the download"
+        });
+        addEvent(
+          "Download link ready for " + truncate(file.name, 80) +
+            "; the browser blocked the new tab.",
+          "info"
+        );
       }
+    } catch (error) {
+      if (downloadWindow && !downloadWindow.closed) downloadWindow.close();
+      const message = error && error.message
+        ? error.message
+        : "Download unavailable.";
+      toast(message);
+      addEvent("Download failed: " + message, "error");
     } finally {
       button.dataset.busy = "";
       button.disabled = false;

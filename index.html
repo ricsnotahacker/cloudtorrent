@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0c0d14">
+  <title>CloudTorrent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Inline SVG icon sprite -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-logo" viewBox="0 0 24 24"><path d="M7 18a4 4 0 0 1-.6-7.96A6 6 0 0 1 18 9.5a4.25 4.25 0 0 1-.5 8.5H7Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 10v6m0 0-2.2-2.2M12 16l2.2-2.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-dashboard" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><rect x="13.5" y="3.5" width="7" height="5" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><rect x="3.5" y="14.5" width="7" height="6" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><rect x="13.5" y="11.5" width="7" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.2h7a2 2 0 0 1 2 2V17.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-10Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l2.5-6 4 12 2.5-6H21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h9m4 0h3M4 17h3m4 0h9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="15" cy="7" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="17" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+    <symbol id="i-paste" viewBox="0 0 24 24"><rect x="5" y="4.5" width="14" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M9 4.5h6v2.2H9z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 12h6M9 15.5h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6.5 6.5 11 11m0-11-11 11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.5 5 6v5.5c0 4.2 2.9 7.4 7 9 4.1-1.6 7-4.8 7-9V6l-7-2.5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m9 12 2.2 2.2L15.2 10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m16 16 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="18.5" cy="12" r="1.6" fill="currentColor"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4.5v11m0 0-4-4m4 4 4-4M5 19.5h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 11v5M12 8v.01" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M6.5 3.5h7l4 4v11a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M13.5 3.5v4h4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+  </defs>
+</svg>
+
+<a class="skip-link" href="#main">Skip to content</a>
+
+<div class="app">
+
+  <!-- Sidebar (desktop) -->
+  <aside class="sidebar" aria-label="Primary">
+    <a class="brand" href="#dashboard" data-nav="dashboard">
+      <span class="brand-mark"><svg class="icon"><use href="#i-logo"/></svg></span>
+      <span class="brand-name">CloudTorrent</span>
+    </a>
+
+    <nav class="nav" aria-label="Main navigation">
+      <a class="nav-item" href="#dashboard" data-nav="dashboard"><svg class="icon"><use href="#i-dashboard"/></svg><span>Dashboard</span></a>
+      <a class="nav-item" href="#files" data-nav="files"><svg class="icon"><use href="#i-folder"/></svg><span>My Files</span></a>
+      <a class="nav-item" href="#activity" data-nav="activity"><svg class="icon"><use href="#i-activity"/></svg><span>Activity</span></a>
+      <a class="nav-item" href="#settings" data-nav="settings"><svg class="icon"><use href="#i-settings"/></svg><span>Settings</span></a>
+    </nav>
+
+    <div class="profile">
+      <span class="avatar"><svg class="icon"><use href="#i-user"/></svg></span>
+      <span class="profile-text">
+        <strong>Guest</strong>
+        <small>No account needed</small>
+      </span>
+    </div>
+  </aside>
+
+  <div class="content">
+
+    <!-- Mobile top bar -->
+    <header class="topbar">
+      <a class="brand" href="#dashboard" data-nav="dashboard">
+        <span class="brand-mark"><svg class="icon"><use href="#i-logo"/></svg></span>
+        <span class="brand-name">CloudTorrent</span>
+      </a>
+      <span class="pill pill-warn" id="topbar-status">Backend not connected</span>
+    </header>
+
+    <main id="main" tabindex="-1">
+
+      <!-- Demo mode banner -->
+      <div class="banner" id="demo-banner" role="status">
+        <svg class="icon"><use href="#i-info"/></svg>
+        <p><strong>Demonstration mode.</strong> Items marked <span class="tag tag-demo">Demo</span> are sample data. No real downloads are running because no backend is connected yet.</p>
+      </div>
+
+      <!-- DASHBOARD -->
+      <section class="view" id="view-dashboard" aria-labelledby="h-dashboard">
+        <div class="page-head">
+          <h1 id="h-dashboard">Welcome to CloudTorrent</h1>
+          <p class="lead">Add a magnet link to send legally authorized content to your cloud storage, then follow its progress here.</p>
+        </div>
+
+        <form class="magnet-card" id="magnet-form" novalidate>
+          <label class="field-label" for="magnet-input">Magnet link</label>
+          <div class="magnet-field">
+            <input id="magnet-input" name="magnet" type="text" inputmode="url" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="magnet:?xt=urn:btih:…" aria-describedby="magnet-hint magnet-feedback">
+            <button type="button" class="icon-btn" id="clear-btn" aria-label="Clear magnet link" hidden><svg class="icon"><use href="#i-close"/></svg></button>
+          </div>
+          <p class="hint" id="magnet-hint">Paste a magnet URI that starts with <code>magnet:?xt=urn:btih:</code></p>
+          <p class="feedback" id="magnet-feedback" role="alert" aria-live="polite"></p>
+
+          <div class="actions">
+            <button type="button" class="btn btn-secondary" id="paste-btn"><svg class="icon"><use href="#i-paste"/></svg><span>Paste</span></button>
+            <button type="submit" class="btn btn-primary" id="add-btn"><svg class="icon"><use href="#i-plus"/></svg><span>Add magnet</span></button>
+          </div>
+        </form>
+
+        <div class="grid-2">
+          <section class="card" aria-labelledby="h-jobs">
+            <div class="card-head">
+              <h2 id="h-jobs">Torrent activity</h2>
+              <span class="tag tag-demo" id="jobs-tag">Demo data</span>
+            </div>
+            <ul class="jobs" id="jobs-list"></ul>
+            <div class="empty" id="jobs-empty" hidden>
+              <svg class="icon"><use href="#i-download"/></svg>
+              <h3>No torrents yet</h3>
+              <p>Added magnets will appear here once a backend is connected.</p>
+            </div>
+          </section>
+
+          <aside class="card card-quiet" aria-labelledby="h-privacy">
+            <div class="card-head"><h2 id="h-privacy">Privacy &amp; security</h2></div>
+            <ul class="checklist">
+              <li><svg class="icon"><use href="#i-shield"/></svg><span>Magnet links are checked in your browser and are not sent anywhere yet.</span></li>
+              <li><svg class="icon"><use href="#i-shield"/></svg><span>No account, cookies for tracking, or personal data are collected.</span></li>
+              <li><svg class="icon"><use href="#i-shield"/></svg><span>Use only content you are legally allowed to download.</span></li>
+            </ul>
+          </aside>
+        </div>
+      </section>
+
+      <!-- MY FILES -->
+      <section class="view" id="view-files" aria-labelledby="h-files" hidden>
+        <div class="page-head">
+          <h1 id="h-files">My Files</h1>
+          <p class="lead">Files stored in your cloud space. Downloads become available once a backend provides real files.</p>
+        </div>
+
+        <div class="toolbar">
+          <div class="search">
+            <svg class="icon"><use href="#i-search"/></svg>
+            <label class="sr-only" for="file-search">Search files</label>
+            <input id="file-search" type="search" placeholder="Search files" autocomplete="off" autocapitalize="off">
+          </div>
+          <label class="sr-only" for="file-sort">Sort files</label>
+          <select id="file-sort" class="select">
+            <option value="name-asc">Name (A–Z)</option>
+            <option value="name-desc">Name (Z–A)</option>
+            <option value="size-desc">Size (largest)</option>
+            <option value="size-asc">Size (smallest)</option>
+            <option value="type-asc">Type</option>
+          </select>
+        </div>
+
+        <section class="card card-flush">
+          <div class="card-head card-head-pad">
+            <h2 class="sr-only">File list</h2>
+            <span class="tag tag-demo" id="files-tag">Demo data</span>
+            <span class="muted" id="files-count"></span>
+          </div>
+          <ul class="files" id="files-list"></ul>
+          <div class="empty" id="files-empty" hidden>
+            <svg class="icon"><use href="#i-folder"/></svg>
+            <h3 id="files-empty-title">No files yet</h3>
+            <p id="files-empty-text">Completed downloads will be listed here.</p>
+          </div>
+        </section>
+      </section>
+
+      <!-- ACTIVITY -->
+      <section class="view" id="view-activity" aria-labelledby="h-activity" hidden>
+        <div class="page-head">
+          <h1 id="h-activity">Activity</h1>
+          <p class="lead">A log of what happened in this session. Demo events are labelled and are not real backend events.</p>
+        </div>
+        <section class="card">
+          <div class="card-head">
+            <h2>Recent events</h2>
+            <button type="button" class="btn btn-ghost btn-sm" id="clear-activity-btn">Clear log</button>
+          </div>
+          <ol class="timeline" id="activity-list"></ol>
+          <div class="empty" id="activity-empty" hidden>
+            <svg class="icon"><use href="#i-activity"/></svg>
+            <h3>Nothing to show</h3>
+            <p>Events such as validated magnets will appear here.</p>
+          </div>
+        </section>
+      </section>
+
+      <!-- SETTINGS -->
+      <section class="view" id="view-settings" aria-labelledby="h-settings" hidden>
+        <div class="page-head">
+          <h1 id="h-settings">Settings</h1>
+          <p class="lead">Preferences are saved only in this browser.</p>
+        </div>
+
+        <section class="card" aria-labelledby="h-appearance">
+          <div class="card-head"><h2 id="h-appearance">Appearance</h2></div>
+          <div class="setting">
+            <div><label for="accent-select"><strong>Accent colour</strong></label><p class="muted">Highlight colour across the interface.</p></div>
+            <select id="accent-select" class="select">
+              <option value="violet">Violet</option>
+              <option value="indigo">Indigo</option>
+              <option value="lavender">Lavender</option>
+            </select>
+          </div>
+          <div class="setting">
+            <div><label for="compact-toggle"><strong>Compact lists</strong></label><p class="muted">Tighter spacing in lists.</p></div>
+            <label class="switch"><input type="checkbox" id="compact-toggle"><span class="slider"></span></label>
+          </div>
+          <div class="setting">
+            <div><label for="motion-toggle"><strong>Reduce motion</strong></label><p class="muted">Turn off transitions and animations.</p></div>
+            <label class="switch"><input type="checkbox" id="motion-toggle"><span class="slider"></span></label>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="h-general">
+          <div class="card-head"><h2 id="h-general">General</h2></div>
+          <div class="setting">
+            <div><label for="demo-toggle"><strong>Show demonstration data</strong></label><p class="muted">Sample jobs, files and events, clearly labelled.</p></div>
+            <label class="switch"><input type="checkbox" id="demo-toggle" checked><span class="slider"></span></label>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="h-backend">
+          <div class="card-head">
+            <h2 id="h-backend">Backend connection</h2>
+            <span class="pill pill-warn" id="backend-pill">Not connected</span>
+          </div>
+          <p class="muted" id="backend-text">Cloud downloading is not configured. This site is a static frontend and cannot run a BitTorrent engine by itself. Magnet links can be validated, but nothing is downloaded until a compatible backend is connected.</p>
+          <div class="setting">
+            <div><strong>Storage</strong><p class="muted">Storage information is shown only when a backend reports real data.</p></div>
+            <span class="muted">Unavailable</span>
+          </div>
+        </section>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<!-- Mobile bottom navigation -->
+<nav class="tabbar" aria-label="Mobile navigation">
+  <a class="tab" href="#dashboard" data-nav="dashboard"><svg class="icon"><use href="#i-dashboard"/></svg><span>Dashboard</span></a>
+  <a class="tab" href="#files" data-nav="files"><svg class="icon"><use href="#i-folder"/></svg><span>Files</span></a>
+  <a class="tab" href="#activity" data-nav="activity"><svg class="icon"><use href="#i-activity"/></svg><span>Activity</span></a>
+  <a class="tab" href="#settings" data-nav="settings"><svg class="icon"><use href="#i-settings"/></svg><span>Settings</span></a>
+</nav>
+
+<!-- Toast messages -->
+<div class="toast-region" id="toast-region" role="status" aria-live="polite"></div>
+
+<script src="script.js" defer></script>
+</body>
+</html>

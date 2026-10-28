@@ -1,177 +1,1062 @@
-/**
- * CloudTorrent Worker — TorBox integration
- * Cloudflare Worker secrets required:
- *   TORBOX_API_KEY
- *   CLOUDTORRENT_PASSWORD
- * Keep secrets out of frontend files.
- */
-const FRONTEND_ORIGIN = "https://ricsnotahacker.github.io";
-const TORBOX_BASE = "https://api.torbox.app/v1/api";
+/* ==========================================================
+   CloudTorrent — script.js
+   Plain JavaScript, no build step, no dependencies.
 
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
-    const origin = request.headers.get("Origin") || "";
-    const corsHeaders = {
-      "Access-Control-Allow-Origin": FRONTEND_ORIGIN,
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, X-CloudTorrent-Password",
-      "Vary": "Origin",
-      "Cache-Control": "no-store"
-    };
-    const respond = (data, status = 200) => new Response(JSON.stringify(data), {
-      status, headers: { ...corsHeaders, "Content-Type": "application/json; charset=utf-8" }
-    });
+   Sections:
+   1. Configuration
+   2. Demo data (always labelled "Demo" in the interface)
+   3. Service layer  <-- the ONLY part to change when a backend is added
+   4. Helpers
+   5. State and settings
+   6. Rendering
+   7. Interactions
+   8. Navigation
+   9. Init
+   ========================================================== */
 
-    if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: corsHeaders });
-    }
-    if (origin && origin !== FRONTEND_ORIGIN) return respond({ ok: false, error: "Origin not allowed." }, 403);
+(() => {
+  "use strict";
 
-    if (url.pathname === "/api/status" && request.method === "GET") {
-      return respond({
-        ok: true,
-        service: "CloudTorrent API",
-        torboxConfigured: Boolean(env.TORBOX_API_KEY),
-        passwordConfigured: Boolean(env.CLOUDTORRENT_PASSWORD)
+  /* ========================================================
+     1. CONFIGURATION
+     Point to the Cloudflare Worker. Never put API keys, passwords
+     or tokens in this public frontend file.
+     ======================================================== */
+  const CONFIG = {
+    backendUrl: "https://weathered-hill-176a.ericofelixlopes.workers.dev",
+    storageKey: "cloudtorrent.settings.v1",
+    maxMagnetLength: 8192
+  };
+
+  const VIEWS = ["dashboard", "files", "activity", "settings"];
+  const VIEW_TITLES = {
+    dashboard: "Dashboard",
+    files: "My Files",
+    activity: "Activity",
+    settings: "Settings"
+  };
+  const ACCENTS = ["violet", "indigo", "lavender"];
+  const SVG_NS = "http://www.w3.org/2000/svg";
+
+  /* ========================================================
+     2. DEMO DATA
+     Sample data only. Nothing here is real, and nothing here
+     is downloading. Every place that shows it is labelled.
+     ======================================================== */
+  const MB = 1024 * 1024;
+  const GB = 1024 * MB;
+  const minutesAgo = (n) => Date.now() - n * 60 * 1000;
+
+  const DEMO_JOBS = [
+    { id: "job-1", name: "open-source-distro-24.04-desktop.iso", status: "downloading", progress: 62, totalBytes: 5.8 * GB, speedBps: 8.4 * MB, demo: true },
+    { id: "job-2", name: "Public Domain Film Collection", status: "downloading", progress: 18, totalBytes: 12.4 * GB, speedBps: 3.1 * MB, demo: true },
+    { id: "job-3", name: "Creative Commons Album (sample)", status: "completed", progress: 100, totalBytes: 412 * MB, demo: true },
+    { id: "job-4", name: "lecture-series-archive.zip", status: "waiting", progress: 0, totalBytes: 1.2 * GB, demo: true },
+    { id: "job-5", name: "project-backup.tar.gz", status: "error", progress: 34, totalBytes: 860 * MB, errorMessage: "Sample error: tracker unreachable", demo: true }
+  ];
+
+  const DEMO_FILES = [
+    { id: "file-1", jobId: "job-3", name: "Creative Commons Album", type: "folder", itemCount: 12, size: 412 * MB, demo: true },
+    { id: "file-2", jobId: "job-2", name: "Public Domain Films", type: "folder", itemCount: 4, size: 2.3 * GB, demo: true },
+    { id: "file-3", jobId: "job-1", name: "open-source-distro-24.04-desktop.iso", type: "disk", size: 5.8 * GB, demo: true },
+    { id: "file-4", jobId: "job-4", name: "lecture-notes.pdf", type: "document", size: 3.4 * MB, demo: true },
+    { id: "file-5", jobId: "job-2", name: "nature-timelapse.mkv", type: "video", size: 1.1 * GB, demo: true },
+    { id: "file-6", jobId: "job-3", name: "podcast-episode-12.mp3", type: "audio", size: 48 * MB, demo: true },
+    { id: "file-7", jobId: "job-5", name: "project-backup-part1.zip", type: "archive", size: 210 * MB, demo: true },
+    { id: "file-8", jobId: "job-3", name: "cover-art.png", type: "image", size: 2.1 * MB, demo: true }
+  ];
+
+  const TYPE_LABELS = {
+    folder: "Folder",
+    disk: "Disk image",
+    document: "Document",
+    video: "Video",
+    audio: "Audio",
+    archive: "Archive",
+    image: "Image"
+  };
+
+  const DEMO_EVENTS = [
+    { id: "demo-ev-1", text: "Magnet link added: Creative Commons Album (sample)", kind: "info", time: minutesAgo(190), demo: true },
+    { id: "demo-ev-2", text: "Download completed: Creative Commons Album (sample)", kind: "ok", time: minutesAgo(70), demo: true },
+    { id: "demo-ev-3", text: "Download failed: project-backup.tar.gz", kind: "error", time: minutesAgo(25), demo: true },
+    { id: "demo-ev-4", text: "Magnet link validation passed", kind: "ok", time: minutesAgo(8), demo: true }
+  ];
+
+  /* ========================================================
+     3. SERVICE LAYER
+     All backend-related logic lives here, separate from the UI.
+     To connect a real backend later, implement the marked
+     branches below. The rest of the interface keeps working.
+     Every function returns plain objects and never touches the DOM.
+     ======================================================== */
+  const Service = {
+    isBackendConfigured() {
+      return CONFIG.backendUrl.trim() !== "";
+    },
+
+    validateMagnet(magnetUri) {
+      const text = typeof magnetUri === "string" ? magnetUri.trim() : "";
+      if (!text) return { valid: false, error: "Paste a magnet link first." };
+      if (text.length > CONFIG.maxMagnetLength) return { valid: false, error: "That link is too long to be a normal magnet link." };
+      if (/\s/.test(text)) return { valid: false, error: "Magnet links can't contain spaces or line breaks. Check that you copied the whole link." };
+      if (/^https?:\/\//i.test(text) || /\.torrent(\?|$)/i.test(text)) return { valid: false, error: "That looks like a web address or a .torrent file. Please paste a magnet link that starts with magnet:?" };
+      if (!/^magnet:\?/i.test(text)) return { valid: false, error: "That doesn't look like a magnet link. It should start with magnet:?" };
+      const params = {};
+      for (const part of text.slice(text.indexOf("?") + 1).split("&")) {
+        if (!part) continue;
+        const eq = part.indexOf("=");
+        const key = (eq === -1 ? part : part.slice(0, eq)).toLowerCase();
+        let value = eq === -1 ? "" : part.slice(eq + 1);
+        try { value = decodeURIComponent(value.replace(/\+/g, " ")); } catch {}
+        (params[key] = params[key] || []).push(value);
+      }
+      const topics = params.xt || [];
+      if (!topics.length) return { valid: false, error: "The link is missing its xt parameter (the torrent identifier). It may have been cut off when copying." };
+      let infoHash = null, hashType = null, sawTopic = false;
+      for (const topic of topics) {
+        const btih = /^urn:btih:(.+)$/i.exec(topic);
+        const btmh = /^urn:btmh:(.+)$/i.exec(topic);
+        if (btih) {
+          sawTopic = true;
+          if (/^[0-9a-f]{40}$/i.test(btih[1]) || /^[a-z2-7]{32}$/i.test(btih[1])) {
+            infoHash = btih[1].toLowerCase(); hashType = "btih"; break;
+          }
+        } else if (btmh) {
+          sawTopic = true;
+          if (/^1220[0-9a-f]{64}$/i.test(btmh[1])) { infoHash = btmh[1].toLowerCase(); hashType = "btmh"; break; }
+        }
+      }
+      if (!infoHash) return { valid: false, error: !sawTopic ? "The xt parameter should start with urn:btih: followed by the torrent hash." : "The torrent hash looks wrong. The link may be incomplete." };
+      return { valid: true, infoHash, hashType, name: params.dn?.[0] || "", trackerCount: (params.tr || []).length };
+    },
+
+    async authenticate() {
+      let password = localStorage.getItem("cloudtorrent.sessionPassword");
+      if (!password) {
+        password = window.prompt("Enter your CloudTorrent password to connect to your private TorBox account:");
+        if (!password) throw new Error("Login cancelled.");
+      }
+      const res = await fetch(CONFIG.backendUrl + "/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password })
       });
-    }
-
-    if (url.pathname === "/api/login" && request.method === "POST") {
-      const body = await request.json().catch(() => ({}));
-      if (!env.CLOUDTORRENT_PASSWORD) return respond({ ok: false, error: "CLOUDTORRENT_PASSWORD is not configured in Cloudflare." }, 503);
-      if (typeof body.password !== "string" || body.password !== env.CLOUDTORRENT_PASSWORD) {
-        return respond({ ok: false, error: "Invalid CloudTorrent password." }, 401);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        localStorage.removeItem("cloudtorrent.sessionPassword");
+        throw new Error(data.error || "Login failed. Check your CloudTorrent password.");
       }
-      if (!env.TORBOX_API_KEY) return respond({ ok: false, error: "TORBOX_API_KEY is not configured in Cloudflare." }, 503);
-      return respond({ ok: true, message: "Authenticated." });
-    }
+      localStorage.setItem("cloudtorrent.sessionPassword", password);
+      return password;
+    },
 
-    const suppliedPassword = request.headers.get("X-CloudTorrent-Password") || "";
-    if (!env.CLOUDTORRENT_PASSWORD || suppliedPassword !== env.CLOUDTORRENT_PASSWORD) {
-      return respond({ ok: false, error: "Please sign in with your CloudTorrent password." }, 401);
-    }
-    if (!env.TORBOX_API_KEY) return respond({ ok: false, error: "TORBOX_API_KEY is not configured in Cloudflare." }, 503);
+    async api(path, options = {}) {
+      if (!this.isBackendConfigured()) throw new Error("Backend URL is not configured.");
+      let password = localStorage.getItem("cloudtorrent.sessionPassword");
+      const headers = { ...(options.headers || {}) };
+      if (password) headers["X-CloudTorrent-Password"] = password;
+      let response = await fetch(CONFIG.backendUrl + path, { ...options, headers });
+      if (response.status === 401 && path !== "/api/login") {
+        password = await this.authenticate();
+        headers["X-CloudTorrent-Password"] = password;
+        response = await fetch(CONFIG.backendUrl + path, { ...options, headers });
+      }
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) throw new Error(data.error || data.message || "Backend request failed.");
+      return data;
+    },
 
-    try {
-      if (url.pathname === "/api/torrents" && request.method === "POST") {
-        const contentType = request.headers.get("Content-Type") || "";
-        const form = new FormData();
-        if (contentType.includes("multipart/form-data")) {
-          const incoming = await request.formData();
-          const file = incoming.get("file");
-          if (!(file instanceof File) || !file.name.toLowerCase().endsWith(".torrent") || file.size === 0) {
-            return respond({ ok: false, error: "Choose a valid, non-empty .torrent file." }, 400);
-          }
-          if (file.size > 10 * 1024 * 1024) return respond({ ok: false, error: "The .torrent file exceeds the 10 MB limit." }, 413);
-          form.set("file", file, file.name);
-          form.set("seed", "1");
-        } else {
-          const body = await request.json().catch(() => ({}));
-          const magnet = typeof body.magnet === "string" ? body.magnet.trim() : "";
-          if (!/^magnet:\?/i.test(magnet) || !/([?&])xt=urn:(btih|btmh):/i.test(magnet)) {
-            return respond({ ok: false, error: "A valid magnet link with a torrent identifier is required." }, 400);
-          }
-          form.set("magnet", magnet);
-          form.set("seed", "1");
-        }
-        const upstream = await fetch(`${TORBOX_BASE}/torrents/createtorrent`, {
+    async checkStatus() {
+      try {
+        const data = await this.api("/api/status");
+        return !!data.ok;
+      } catch { return false; }
+    },
+
+    async addTorrent(magnetUri) {
+      const validation = this.validateMagnet(magnetUri);
+      if (!validation.valid) return { ok: false, code: "INVALID_MAGNET", message: validation.error };
+      try {
+        if (!localStorage.getItem("cloudtorrent.sessionPassword")) await this.authenticate();
+        const data = await this.api("/api/torrents", {
           method: "POST",
-          headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}` },
-          body: form
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ magnet: magnetUri })
         });
-        const result = await upstream.json().catch(() => ({}));
-        if (!upstream.ok || result.success === false) {
-          return respond({ ok: false, error: safeMessage(result, `TorBox rejected the torrent (HTTP ${upstream.status}).`) }, upstream.status >= 400 ? upstream.status : 502);
-        }
-        return respond({ ok: true, message: "Torrent submitted to TorBox.", torrent: result.data || result });
+        return { ok: true, message: data.message || "Torrent sent to TorBox.", torrent: data.torrent, validation };
+      } catch (error) {
+        return { ok: false, code: "BACKEND_ERROR", message: error.message || "Could not submit torrent.", validation };
       }
+    },
 
-      if (url.pathname === "/api/torrents" && request.method === "GET") {
-        const upstreamUrl = new URL(`${TORBOX_BASE}/torrents/mylist`);
-        upstreamUrl.searchParams.set("bypass_cache", "true");
-        const upstream = await fetch(upstreamUrl, {
-          headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}` }
+    async addTorrentFile(file) {
+      if (!file || !/\.torrent$/i.test(file.name)) return { ok: false, message: "Choose a valid .torrent file." };
+      if (file.size > 10 * 1024 * 1024) return { ok: false, message: "The .torrent file is too large (maximum 10 MB)." };
+      try {
+        if (!localStorage.getItem("cloudtorrent.sessionPassword")) await this.authenticate();
+        const form = new FormData();
+        form.append("file", file, file.name);
+        const password = localStorage.getItem("cloudtorrent.sessionPassword");
+        const response = await fetch(CONFIG.backendUrl + "/api/torrents", {
+          method: "POST", headers: { "X-CloudTorrent-Password": password }, body: form
         });
-        const result = await upstream.json().catch(() => ({}));
-        if (!upstream.ok || result.success === false) {
-          return respond({ ok: false, error: safeMessage(result, `Could not retrieve torrents from TorBox (HTTP ${upstream.status}).`) }, upstream.status >= 400 ? upstream.status : 502);
-        }
-        const list = Array.isArray(result.data) ? result.data :
-          Array.isArray(result.data?.torrents) ? result.data.torrents :
-          Array.isArray(result) ? result : [];
-        return respond({ ok: true, torrents: list });
-      }
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.ok === false) throw new Error(data.error || "Could not submit the torrent file.");
+        return { ok: true, message: data.message || "Torrent file submitted to TorBox." };
+      } catch (error) { return { ok: false, message: error.message || "Could not submit the torrent file." }; }
+    },
 
-      if (url.pathname === "/api/files" && request.method === "GET") {
-        const torrentId = url.searchParams.get("torrentId");
-        const upstreamUrl = new URL(`${TORBOX_BASE}/torrents/mylist`);
-        upstreamUrl.searchParams.set("bypass_cache", "true");
-        if (torrentId && /^\d+$/.test(torrentId)) upstreamUrl.searchParams.set("id", torrentId);
-        const upstream = await fetch(upstreamUrl, {
-          headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}` }
-        });
-        const result = await upstream.json().catch(() => ({}));
-        if (!upstream.ok || result.success === false) {
-          return respond({ ok: false, error: safeMessage(result, `Could not retrieve files from TorBox (HTTP ${upstream.status}).`) }, upstream.status >= 400 ? upstream.status : 502);
+    async getTorrentJobs({ includeDemo = false } = {}) {
+      let realJobs = [];
+      try {
+        if (localStorage.getItem("cloudtorrent.sessionPassword")) {
+          const data = await this.api("/api/torrents");
+          realJobs = (data.torrents || []).map((t) => ({
+            id: "torbox-" + t.id,
+            torboxId: String(t.id),
+            name: t.name || ("Torrent " + t.id),
+            status: normalizeStatus(t),
+            progress: Number(t.progress ?? t.download_percent ?? 0),
+            totalBytes: Number(t.size ?? t.total_size ?? 0),
+            speedBps: Number(t.download_speed ?? t.download_speed_bytes ?? 0),
+            seeds: Number.isFinite(Number(t.seeds ?? t.seeders)) ? Number(t.seeds ?? t.seeders) : null,
+            peers: Number.isFinite(Number(t.peers ?? t.leechers)) ? Number(t.peers ?? t.leechers) : null,
+            errorMessage: t.error || "",
+            demo: false
+          }));
         }
-        const torrents = Array.isArray(result.data) ? result.data :
-          result.data && typeof result.data === "object" ? [result.data] : [];
-        const files = [];
-        for (const torrent of torrents) {
-          const tid = String(torrent.id ?? torrent.torrent_id ?? "");
-          if (torrentId && tid !== torrentId) continue;
-          const items = Array.isArray(torrent.files) ? torrent.files : [];
-          for (const file of items) {
-            const id = file.id ?? file.file_id;
-            if (id === undefined || id === null) continue;
-            files.push({
-              id: String(id), torrentId: tid,
-              name: file.name || file.short_name || `File ${id}`,
-              size: Number(file.size || 0), itemCount: 0
-            });
-          }
-        }
-        return respond({ ok: true, files });
-      }
+      } catch (error) { console.warn("CloudTorrent torrent list:", error); }
+      const demoJobs = [];
+      return [...realJobs, ...demoJobs];
+    },
 
-      if (url.pathname === "/api/download" && request.method === "GET") {
-        const torrentId = url.searchParams.get("torrentId");
-        const fileId = url.searchParams.get("fileId");
-        if (!torrentId || !/^\d+$/.test(torrentId) || !fileId || !/^\d+$/.test(fileId)) {
-          return respond({ ok: false, error: "Valid torrentId and fileId are required." }, 400);
+    async getTorrentFiles(jobId = null, { includeDemo = false } = {}) {
+      let realFiles = [];
+      try {
+        if (localStorage.getItem("cloudtorrent.sessionPassword")) {
+          const suffix = jobId && String(jobId).startsWith("torbox-") ? "?torrentId=" + encodeURIComponent(String(jobId).replace("torbox-", "")) : "";
+          const data = await this.api("/api/files" + suffix);
+          realFiles = (data.files || []).map((f) => ({
+            id: "torbox-file-" + f.torrentId + "-" + f.id,
+            torboxId: String(f.id),
+            torrentId: String(f.torrentId),
+            jobId: "torbox-" + f.torrentId,
+            name: f.name || ("File " + f.id),
+            type: fileType(f.name),
+            size: Number(f.size || 0),
+            itemCount: f.itemCount,
+            demo: false
+          }));
         }
-        const downloadUrl = new URL(`${TORBOX_BASE}/torrents/requestdl`);
-        downloadUrl.searchParams.set("torrent_id", torrentId);
-        downloadUrl.searchParams.set("file_id", fileId);
-        // TorBox accepts the API token for this endpoint; it is sent server-side only.
-        downloadUrl.searchParams.set("token", env.TORBOX_API_KEY);
-        const upstream = await fetch(downloadUrl, {
-          headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}` }
-        });
-        const result = await upstream.json().catch(() => null);
-        if (!upstream.ok || result?.success === false) {
-          return respond({ ok: false, error: safeMessage(result, `TorBox could not create a download link (HTTP ${upstream.status}).`) }, upstream.status >= 400 ? upstream.status : 502);
-        }
-        const link = result?.data;
-        const downloadLink = typeof link === "string" ? link : (link?.url || link?.download_url || result?.url);
-        if (!downloadLink || typeof downloadLink !== "string" || !/^https?:\/\//i.test(downloadLink)) {
-          return respond({ ok: false, error: safeMessage(result, "TorBox did not return a valid download URL.") }, 502);
-        }
-        return respond({ ok: true, url: downloadLink });
-      }
+      } catch (error) { console.warn("CloudTorrent file list:", error); }
+      let demoFiles = [];
+      if (jobId) demoFiles = demoFiles.filter((file) => file.jobId === jobId);
+      return [...realFiles, ...demoFiles];
+    },
 
-      return respond({ ok: false, error: "Not found." }, 404);
-    } catch (error) {
-      // Do not leak secrets or raw upstream responses in client-facing errors.
-      return respond({ ok: false, error: "Unexpected backend error. Check the Cloudflare Worker logs." }, 500);
+    async downloadFile(fileId) {
+      const match = /^torbox-file-(\d+)-(\d+)$/.exec(String(fileId));
+      if (!match) return { ok: false, code: "DEMO_FILE", message: "This is demonstration data, not a real downloadable file." };
+      try {
+        const data = await this.api("/api/download?torrentId=" + encodeURIComponent(match[1]) + "&fileId=" + encodeURIComponent(match[2]));
+        if (data.url) window.open(data.url, "_blank", "noopener");
+        return { ok: true, message: "Download link opened." };
+      } catch (error) { return { ok: false, message: error.message || "Download unavailable." }; }
+    },
+
+    async getActivity({ includeDemo = false } = {}) {
+      return [];
+    }
+  };
+
+  function normalizeStatus(t) {
+    const s = String(t.download_state || t.status || "").toLowerCase();
+    if (s.includes("upload") || s.includes("seed")) return "completed";
+    if (s.includes("complete") || s === "cached") return "completed";
+    if (s.includes("error") || s.includes("fail")) return "error";
+    if (s.includes("queue") || s.includes("wait")) return "waiting";
+    return "downloading";
+  }
+
+  function fileType(name = "") {
+    const ext = String(name).split(".").pop().toLowerCase();
+    if (["mp4","mkv","mov","avi","webm"].includes(ext)) return "video";
+    if (["mp3","wav","flac","m4a","aac"].includes(ext)) return "audio";
+    if (["zip","rar","7z","gz","tar"].includes(ext)) return "archive";
+    if (["pdf","doc","docx","txt","epub"].includes(ext)) return "document";
+    if (["png","jpg","jpeg","gif","webp","svg"].includes(ext)) return "image";
+    if (["iso","img","dmg"].includes(ext)) return "disk";
+    return "document";
+  }
+
+  /* ========================================================
+     4. HELPERS
+     ======================================================== */
+  const $ = (selector) => document.querySelector(selector);
+
+  /** Builds an element safely. Text always goes in as textContent, never as HTML. */
+  function el(tag, props = {}, children = []) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(props)) {
+      if (value === null || value === undefined || value === false) continue;
+      if (key === "class") node.className = value;
+      else if (key === "text") node.textContent = value;
+      else node.setAttribute(key, value === true ? "" : String(value));
+    }
+    for (const child of [].concat(children)) {
+      if (child) node.append(child);
+    }
+    return node;
+  }
+
+  /** Creates an inline SVG icon that references the sprite in index.html. */
+  function icon(id) {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("class", "icon");
+    svg.setAttribute("aria-hidden", "true");
+    const use = document.createElementNS(SVG_NS, "use");
+    use.setAttribute("href", "#" + id);
+    svg.append(use);
+    return svg;
+  }
+
+  function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) return "Unknown";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    return (unit === 0 ? Math.round(value) : value.toFixed(1)) + " " + units[unit];
+  }
+
+  function formatEta(seconds) {
+    if (!Number.isFinite(seconds) || seconds <= 0) return "";
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    if (h > 0) return h + "h " + String(m).padStart(2, "0") + "m left";
+    if (m > 0) return m + "m left";
+    return s + "s left";
+  }
+
+  const timeFormatter = new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+  function truncate(text, max) {
+    return text.length > max ? text.slice(0, max - 1) + "…" : text;
+  }
+
+  /* ========================================================
+     5. STATE AND SETTINGS
+     ======================================================== */
+  const state = {
+    jobs: [],
+    files: [],
+    demoEvents: [],
+    events: [], // events created in this browser session
+    removedJobIds: new Set(),
+    demoEventsCleared: false,
+    busy: false
+  };
+
+  const prefersReducedMotion =
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  const defaultSettings = {
+    accent: "violet",
+    compact: false,
+    reduceMotion: prefersReducedMotion,
+    demo: false
+  };
+
+  let settings = { ...defaultSettings };
+
+  function loadSettings() {
+    try {
+      const raw = window.localStorage.getItem(CONFIG.storageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const merged = { ...defaultSettings };
+        if (ACCENTS.includes(parsed.accent)) merged.accent = parsed.accent;
+        if (typeof parsed.compact === "boolean") merged.compact = parsed.compact;
+        if (typeof parsed.reduceMotion === "boolean") merged.reduceMotion = parsed.reduceMotion;
+        if (typeof parsed.demo === "boolean") merged.demo = parsed.demo;
+        return merged;
+      }
+    } catch {
+      // Storage can be unavailable (private mode); fall back to defaults.
+    }
+    return { ...defaultSettings };
+  }
+
+  function saveSettings() {
+    try {
+      window.localStorage.setItem(CONFIG.storageKey, JSON.stringify(settings));
+    } catch {
+      // Ignore: settings simply won't persist.
     }
   }
-};
 
-function safeMessage(result, fallback) {
-  if (typeof result?.detail === "string") return result.detail.slice(0, 300);
-  if (typeof result?.error === "string") return result.error.slice(0, 300);
-  if (typeof result?.message === "string") return result.message.slice(0, 300);
-  return fallback;
-}
+  function applySettings() {
+    const root = document.documentElement;
+    root.setAttribute("data-accent", settings.accent);
+    if (settings.compact) root.setAttribute("data-compact", "true");
+    else root.removeAttribute("data-compact");
+    if (settings.reduceMotion) root.setAttribute("data-reduce-motion", "true");
+    else root.removeAttribute("data-reduce-motion");
+  }
+
+  /* ========================================================
+     6. RENDERING
+     ======================================================== */
+
+  /* ---- Toasts ---- */
+  function toast(message) {
+    const region = $("#toast-region");
+    const node = el("div", { class: "toast", text: message });
+    region.append(node);
+    while (region.children.length > 3) region.firstElementChild.remove();
+    window.setTimeout(() => node.remove(), 3800);
+  }
+
+  /* ---- Backend status ---- */
+  async function renderBackendStatus() {
+    const configured = Service.isBackendConfigured();
+    const pill = $("#backend-pill");
+    const topbar = $("#topbar-status");
+    pill.className = "pill pill-warn";
+    topbar.className = "pill pill-warn";
+
+    if (!configured) {
+      pill.textContent = "Not connected";
+      topbar.textContent = "Backend not connected";
+      $("#backend-text").textContent =
+        "No backend URL is configured. Demo data is local only; no torrent is being downloaded.";
+      return;
+    }
+
+    pill.textContent = "Checking…";
+    topbar.textContent = "Checking backend…";
+    $("#backend-text").textContent = "Checking the CloudTorrent API connection…";
+
+    try {
+      const response = await fetch(CONFIG.backendUrl.replace(/\/$/, "") + "/api/status", {
+        method: "GET",
+        headers: { "Accept": "application/json" }
+      });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const data = await response.json();
+      if (data.ok !== true || data.service !== "CloudTorrent API") {
+        throw new Error("Unexpected API response");
+      }
+      pill.className = "pill pill-ok";
+      topbar.className = "pill pill-ok";
+      pill.textContent = "API online";
+      topbar.textContent = "API online";
+      $("#backend-text").textContent =
+        "The Cloudflare API is reachable. Sign in when prompted to submit torrents and load your TorBox files. Demo items are controlled in Settings.";
+    } catch (error) {
+      pill.className = "pill pill-warn";
+      topbar.className = "pill pill-warn";
+      pill.textContent = "Connection failed";
+      topbar.textContent = "Backend unavailable";
+      $("#backend-text").textContent =
+        "The configured backend could not be verified. Check the Worker deployment and try again. Demo data is local only; no torrent was sent.";
+    }
+  }
+
+  /* ---- Torrent jobs ---- */
+  function closeMenus() {
+    document.querySelectorAll(".job-actions .menu").forEach((menu) => {
+      const button = menu.parentElement.querySelector(".menu-btn");
+      if (button) button.setAttribute("aria-expanded", "false");
+      menu.remove();
+    });
+  }
+
+  function menuItem(label, onClick, disabled = false) {
+    const button = el("button", { type: "button", role: "menuitem", text: label });
+    if (disabled) {
+      button.disabled = true;
+    } else {
+      button.addEventListener("click", () => {
+        closeMenus();
+        onClick();
+      });
+    }
+    return button;
+  }
+
+  function openJobMenu(job, actions, trigger) {
+    const menu = el("div", { class: "menu", role: "menu", "aria-label": "Actions for " + job.name });
+
+    menu.append(
+      menuItem("Open My Files", () => {
+        window.location.hash = "#files";
+      }),
+      menuItem("Copy name", async () => {
+        try {
+          await navigator.clipboard.writeText(job.name);
+          toast("Name copied.");
+        } catch {
+          toast("Couldn't copy automatically. Press and hold the name to copy it.");
+        }
+      })
+    );
+
+    if (job.status === "error") {
+      menu.append(
+        menuItem("Retry", () => {
+          toast("To retry, submit the magnet link again after checking the TorBox error.");
+        })
+      );
+    }
+
+    menu.append(menuItem("Open My Files to download", () => {
+      window.location.hash = "#files";
+      toast("Choose a real TorBox file in My Files to open its download link.");
+    }));
+
+    if (job.demo) {
+      menu.append(
+        menuItem("Remove from demo list", () => {
+          state.removedJobIds.add(job.id);
+          state.jobs = state.jobs.filter((item) => item.id !== job.id);
+          renderJobs();
+          toast("Removed from the demo list.");
+        })
+      );
+    }
+
+    actions.append(menu);
+    trigger.setAttribute("aria-expanded", "true");
+    const first = menu.querySelector("button:not([disabled])");
+    if (first) first.focus();
+  }
+
+  function renderJob(job) {
+    const label = { waiting: "Waiting", downloading: "Downloading", completed: "Completed", error: "Error" }[job.status] || "Waiting";
+    const percent = Math.max(0, Math.min(100, Math.round(job.progress)));
+    const downloadedBytes = (job.totalBytes * percent) / 100;
+
+    const trigger = el("button", {
+      type: "button",
+      class: "menu-btn",
+      "aria-label": "Actions for " + job.name,
+      "aria-haspopup": "menu",
+      "aria-expanded": "false"
+    }, icon("i-more"));
+
+    const actions = el("div", { class: "job-actions" }, trigger);
+    trigger.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const alreadyOpen = actions.querySelector(".menu");
+      closeMenus();
+      if (!alreadyOpen) openJobMenu(job, actions, trigger);
+    });
+
+    const meta = el("div", { class: "job-meta" });
+    if (job.demo) meta.append(el("span", { class: "tag tag-demo", text: "Demo" }));
+    meta.append(el("span", { text: percent + "%" }));
+    meta.append(el("span", { text: formatBytes(downloadedBytes) + " of " + formatBytes(job.totalBytes) }));
+    if (Number.isFinite(job.seeds)) meta.append(el("span", { text: "Seeds: " + job.seeds }));
+    if (Number.isFinite(job.peers)) meta.append(el("span", { text: "Peers: " + job.peers }));
+
+    if (job.status === "downloading" && job.speedBps > 0) {
+      const remaining = job.totalBytes - downloadedBytes;
+      meta.append(el("span", { text: formatBytes(job.speedBps) + "/s" }));
+      const eta = formatEta(remaining / job.speedBps);
+      if (eta) meta.append(el("span", { text: eta }));
+    }
+    if (job.status === "error" && job.errorMessage) {
+      meta.append(el("span", { text: job.errorMessage }));
+    }
+
+    const bar = el("div", { class: "progress-bar" });
+    bar.style.width = percent + "%";
+    const progress = el("div", {
+      class: "progress",
+      role: "progressbar",
+      "aria-label": "Progress for " + job.name,
+      "aria-valuemin": "0",
+      "aria-valuemax": "100",
+      "aria-valuenow": String(percent)
+    }, bar);
+
+    const heading = el("div", {}, [
+      el("div", { class: "job-name", text: job.name }),
+      el("span", { class: "status status-" + job.status, text: label })
+    ]);
+
+    return el("li", { class: "job is-" + job.status }, [
+      el("div", { class: "job-top" }, [heading, actions]),
+      meta,
+      progress
+    ]);
+  }
+
+  function renderJobs() {
+    const list = $("#jobs-list");
+    list.replaceChildren();
+    for (const job of state.jobs) list.append(renderJob(job));
+    list.hidden = state.jobs.length === 0;
+    $("#jobs-empty").hidden = state.jobs.length > 0;
+    $("#jobs-tag").hidden = !state.jobs.some((job) => job.demo);
+  }
+
+  /* ---- Files ---- */
+  function getVisibleFiles() {
+    const query = $("#file-search").value.trim().toLowerCase();
+    const sort = $("#file-sort").value;
+
+    let files = state.files.filter((file) => {
+      if (!query) return true;
+      const haystack = (file.name + " " + (TYPE_LABELS[file.type] || "")).toLowerCase();
+      return haystack.includes(query);
+    });
+
+    files = files.slice().sort((a, b) => {
+      switch (sort) {
+        case "name-desc": return collator.compare(b.name, a.name);
+        case "size-desc": return b.size - a.size;
+        case "size-asc": return a.size - b.size;
+        case "type-asc": {
+          const byType = collator.compare(TYPE_LABELS[a.type] || "", TYPE_LABELS[b.type] || "");
+          return byType !== 0 ? byType : collator.compare(a.name, b.name);
+        }
+        default: return collator.compare(a.name, b.name);
+      }
+    });
+
+    return { files, query };
+  }
+
+  function renderFiles() {
+    const list = $("#files-list");
+    list.replaceChildren();
+
+    const { files, query } = getVisibleFiles();
+
+    for (const file of files) {
+      const typeLabel = TYPE_LABELS[file.type] || "File";
+      const metaText = file.type === "folder"
+        ? typeLabel + " · " + file.itemCount + " items"
+        : typeLabel;
+
+      const meta = el("div", { class: "file-meta" });
+      if (file.demo) meta.append(el("span", { class: "tag tag-demo", text: "Demo" }), " ");
+      meta.append(metaText);
+
+      const download = el("button", {
+        type: "button",
+        class: "menu-btn",
+        title: file.demo ? "Demo files cannot be downloaded" : "Download " + file.name,
+        "aria-label": "Download " + file.name
+      }, icon("i-download"));
+      if (file.demo) {
+        download.disabled = true;
+        download.style.opacity = "0.55";
+      }
+      download.addEventListener("click", async () => {
+        const result = await Service.downloadFile(file.id);
+        toast(result.message);
+      });
+
+      list.append(
+        el("li", {}, [
+          el("span", { class: "file-icon" + (file.type === "folder" ? " is-folder" : "") },
+            icon(file.type === "folder" ? "i-folder" : "i-file")),
+          el("div", { class: "file-info" }, [
+            el("div", { class: "file-name", title: file.name, text: file.name }),
+            meta
+          ]),
+          el("span", { class: "file-size", text: formatBytes(file.size) }),
+          download
+        ])
+      );
+    }
+
+    const total = state.files.length;
+    const isEmpty = files.length === 0;
+    list.hidden = isEmpty;
+    $("#files-empty").hidden = !isEmpty;
+    $("#files-tag").hidden = !state.files.some((file) => file.demo);
+    $("#files-count").textContent = total === 0 ? "" : files.length + (files.length === 1 ? " item" : " items");
+
+    if (isEmpty) {
+      if (total === 0) {
+        $("#files-empty-title").textContent = "No files yet";
+        $("#files-empty-text").textContent = "No files are listed yet. Sign in and add a torrent, then refresh this view.";
+      } else {
+        $("#files-empty-title").textContent = "No matching files";
+        $("#files-empty-text").textContent = "Nothing matches “" + truncate(query, 40) + "”. Try a different search.";
+      }
+    }
+  }
+
+  /* ---- Activity ---- */
+  function renderActivity() {
+    const list = $("#activity-list");
+    list.replaceChildren();
+
+    const demoEvents = state.demoEventsCleared ? [] : state.demoEvents;
+    const all = [...state.events, ...demoEvents].sort((a, b) => b.time - a.time);
+
+    for (const event of all) {
+      const dotClass = "event-dot" + (event.kind === "ok" ? " is-ok" : event.kind === "error" ? " is-error" : "");
+      const tag = event.demo
+        ? el("span", { class: "tag tag-demo", text: "Demo" })
+        : el("span", { class: "tag tag-real", text: "Local" });
+
+      list.append(
+        el("li", { class: "event" }, [
+          el("span", { class: dotClass, "aria-hidden": "true" }),
+          el("div", { class: "event-body" }, [
+            el("div", {}, [tag, " ", event.text]),
+            el("div", { class: "event-time", text: timeFormatter.format(new Date(event.time)) })
+          ])
+        ])
+      );
+    }
+
+    list.hidden = all.length === 0;
+    $("#activity-empty").hidden = all.length > 0;
+  }
+
+  function addEvent(text, kind = "info") {
+    state.events.unshift({
+      id: "ev-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7),
+      text,
+      kind,
+      time: Date.now(),
+      demo: false
+    });
+    if (state.events.length > 100) state.events.length = 100;
+    renderActivity();
+  }
+
+  async function refreshAll() {
+    const includeDemo = false;
+    const [jobs, files, demoEvents] = await Promise.all([
+      Service.getTorrentJobs({ includeDemo }),
+      Service.getTorrentFiles(null, { includeDemo }),
+      Service.getActivity({ includeDemo })
+    ]);
+    state.jobs = jobs.filter((job) => !state.removedJobIds.has(job.id));
+    state.files = files;
+    state.demoEvents = demoEvents;
+    renderJobs();
+    renderFiles();
+    renderActivity();
+  }
+
+  /* ========================================================
+     7. INTERACTIONS
+     ======================================================== */
+
+  /* ---- Magnet form ---- */
+  function setFeedback(type, message) {
+    const feedback = $("#magnet-feedback");
+    feedback.className = "feedback " + type;
+    feedback.textContent = message;
+  }
+
+  function clearFeedback() {
+    const feedback = $("#magnet-feedback");
+    feedback.className = "feedback";
+    feedback.textContent = "";
+    $("#magnet-input").removeAttribute("aria-invalid");
+  }
+
+  function syncClearButton() {
+    $("#clear-btn").hidden = $("#magnet-input").value.length === 0;
+  }
+
+  function setBusy(isBusy) {
+    state.busy = isBusy;
+    const button = $("#add-btn");
+    button.disabled = isBusy;
+    button.classList.toggle("is-loading", isBusy);
+    button.setAttribute("aria-busy", isBusy ? "true" : "false");
+  }
+
+  /** Validates what is currently in the field and shows the result, without submitting. */
+  function validateInline() {
+    const input = $("#magnet-input");
+    if (!input.value.trim()) {
+      clearFeedback();
+      return;
+    }
+    const check = Service.validateMagnet(input.value);
+    if (check.valid) {
+      input.setAttribute("aria-invalid", "false");
+      setFeedback("success", "Looks like a valid magnet link. Tap “Add magnet” to continue.");
+    } else {
+      input.setAttribute("aria-invalid", "true");
+      setFeedback("error", check.error);
+    }
+  }
+
+  async function handlePaste() {
+    const input = $("#magnet-input");
+    const fallback = () => {
+      input.focus();
+      setFeedback("info", "Couldn't read the clipboard automatically. Touch and hold the field, then tap Paste.");
+    };
+
+    if (!navigator.clipboard || typeof navigator.clipboard.readText !== "function") {
+      fallback();
+      return;
+    }
+    try {
+      const text = (await navigator.clipboard.readText()).trim();
+      if (!text) {
+        setFeedback("info", "Your clipboard is empty. Copy a magnet link first.");
+        return;
+      }
+      input.value = text;
+      syncClearButton();
+      validateInline();
+    } catch {
+      fallback();
+    }
+  }
+
+  function handleClear() {
+    const input = $("#magnet-input");
+    input.value = "";
+    clearFeedback();
+    syncClearButton();
+    input.focus();
+  }
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    if (state.busy) return;
+
+    const input = $("#magnet-input");
+    const value = input.value.trim();
+    const check = Service.validateMagnet(value);
+
+    if (!check.valid) {
+      input.setAttribute("aria-invalid", "true");
+      setFeedback("error", check.error);
+      addEvent("Magnet link rejected: " + check.error, "error");
+      input.focus();
+      return;
+    }
+
+    input.setAttribute("aria-invalid", "false");
+    setBusy(true);
+    try {
+      const result = await Service.addTorrent(value);
+      const label = check.name ? " “" + truncate(check.name, 80) + "”" : "";
+
+      if (result.ok) {
+        // FUTURE: runs only when a real backend confirms the torrent was accepted.
+        setFeedback("success", "Torrent submitted" + label + ".");
+        addEvent("Torrent submitted" + label + ".", "ok");
+        await refreshAll();
+      } else if (result.code === "INVALID_MAGNET") {
+        setFeedback("error", result.message);
+        addEvent("Magnet link rejected: " + result.message, "error");
+      } else {
+        setFeedback("error", result.message || "The torrent could not be submitted to the backend.");
+        addEvent("Torrent not submitted" + label + ": " + (result.message || "backend error"), "error");
+        toast(result.message || "Torrent not submitted.");
+      }
+    } catch {
+      setFeedback("error", "Something went wrong while checking the link. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function bindMagnetForm() {
+    const input = $("#magnet-input");
+
+    const uploadWrap = el("div", { class: "torrent-upload", style: "margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap" });
+    const fileInput = el("input", { type: "file", accept: ".torrent,application/x-bittorrent", id: "torrent-file-input", style: "max-width:100%;color:inherit" });
+    const uploadButton = el("button", { type: "button", class: "button button-secondary", text: "Upload .torrent file" });
+    uploadButton.addEventListener("click", async () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) { toast("Choose a .torrent file first."); return; }
+      setBusy(true);
+      try {
+        const result = await Service.addTorrentFile(file);
+        if (result.ok) { setFeedback("success", result.message); addEvent("Torrent file submitted: " + file.name, "ok"); await refreshAll(); }
+        else { setFeedback("error", result.message); toast(result.message); }
+      } finally { setBusy(false); }
+    });
+    uploadWrap.append(fileInput, uploadButton);
+    const existingUpload = $("#torrent-upload");
+    if (!existingUpload) { uploadWrap.id = "torrent-upload"; $("#magnet-form").append(uploadWrap); }
+
+    $("#magnet-form").addEventListener("submit", handleSubmit);
+    $("#paste-btn").addEventListener("click", handlePaste);
+    $("#clear-btn").addEventListener("click", handleClear);
+
+    input.addEventListener("input", () => {
+      syncClearButton();
+      clearFeedback();
+    });
+    // After a native paste, check the link once the field has updated.
+    input.addEventListener("paste", () => {
+      window.setTimeout(() => {
+        input.value = input.value.trim();
+        syncClearButton();
+        validateInline();
+      }, 0);
+    });
+
+    syncClearButton();
+  }
+
+  /* ---- Files ---- */
+  function bindFiles() {
+    $("#file-search").addEventListener("input", renderFiles);
+    $("#file-sort").addEventListener("change", renderFiles);
+  }
+
+  /* ---- Activity ---- */
+  function bindActivity() {
+    $("#clear-activity-btn").addEventListener("click", () => {
+      state.events = [];
+      state.demoEventsCleared = true;
+      renderActivity();
+      toast("Activity log cleared.");
+    });
+  }
+
+  /* ---- Settings ---- */
+  function bindSettings() {
+    const accent = $("#accent-select");
+    const compact = $("#compact-toggle");
+    const motion = $("#motion-toggle");
+    const demo = $("#demo-toggle");
+    if (demo) { const demoRow = demo.closest("label, .setting-row, .setting-item, .toggle-row") || demo.parentElement; if (demoRow) demoRow.hidden = true; }
+
+    accent.value = settings.accent;
+    compact.checked = settings.compact;
+    motion.checked = settings.reduceMotion;
+    demo.checked = settings.demo;
+
+    accent.addEventListener("change", () => {
+      settings.accent = ACCENTS.includes(accent.value) ? accent.value : "violet";
+      applySettings();
+      saveSettings();
+    });
+    compact.addEventListener("change", () => {
+      settings.compact = compact.checked;
+      applySettings();
+      saveSettings();
+    });
+    motion.addEventListener("change", () => {
+      settings.reduceMotion = motion.checked;
+      applySettings();
+      saveSettings();
+    });
+    demo.addEventListener("change", async () => {
+      settings.demo = demo.checked;
+      if (settings.demo) {
+        state.removedJobIds.clear();
+        state.demoEventsCleared = false;
+      }
+      saveSettings();
+      await refreshAll();
+      toast(settings.demo ? "Demonstration data is on." : "Demonstration data is off.");
+    });
+  }
+
+  /* ---- Global listeners for job menus ---- */
+  function bindGlobal() {
+    document.addEventListener("click", (event) => {
+      if (!event.target.closest(".job-actions")) closeMenus();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      const openMenu = document.querySelector(".job-actions .menu");
+      if (!openMenu) return;
+      const trigger = openMenu.parentElement.querySelector(".menu-btn");
+      closeMenus();
+      if (trigger) trigger.focus();
+    });
+  }
+
+  /* ========================================================
+     8. NAVIGATION
+     Uses the URL hash (#dashboard, #files, #activity, #settings),
+     which works on GitHub Pages without any server setup.
+     ======================================================== */
+  function currentRoute() {
+    const name = window.location.hash.replace("#", "");
+    return VIEWS.includes(name) ? name : "dashboard";
+  }
+
+  function route(moveFocus) {
+    const name = currentRoute();
+
+    for (const view of VIEWS) {
+      $("#view-" + view).hidden = view !== name;
+    }
+
+    document.querySelectorAll("[data-nav]").forEach((link) => {
+      const active = link.dataset.nav === name;
+      link.classList.toggle("is-active", active);
+      if (active) link.setAttribute("aria-current", "page");
+      else link.removeAttribute("aria-current");
+    });
+
+    document.title = VIEW_TITLES[name] + " · CloudTorrent";
+    closeMenus();
+
+    if (moveFocus) {
+      window.scrollTo(0, 0);
+      $("#main").focus({ preventScroll: true });
+    }
+  }
+
+  /* ========================================================
+     9. INIT
+     ======================================================== */
+  async function init() {
+    settings = loadSettings();
+    applySettings();
+    bindSettings();
+    // This build is live-only: hide the old static demo notice and demo labels.
+    document.querySelectorAll(".demo-banner, #demo-banner, [data-demo-banner], .demo-notice").forEach((node) => { node.hidden = true; });
+    document.querySelectorAll("body *").forEach((node) => {
+      if (node.children.length === 0 && /^(DEMO|DEMO DATA)$/i.test((node.textContent || "").trim())) node.hidden = true;
+      if (node.children.length === 0 && /Demonstration mode/i.test(node.textContent || "")) {
+        const parent = node.closest(".notice, .alert, .banner, .callout, section, aside, div");
+        if (parent) parent.hidden = true;
+      }
+    });
+    bindMagnetForm();
+    bindFiles();
+    bindActivity();
+    bindGlobal();
+    await renderBackendStatus();
+
+    window.addEventListener("hashchange", () => route(true));
+    route(false);
+
+    await refreshAll();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();

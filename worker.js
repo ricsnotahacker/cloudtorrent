@@ -1,42 +1,46 @@
 /**
  * CloudTorrent Worker — TorBox integration
- * Required Cloudflare secrets:
+ * Cloudflare Worker secrets required:
  *   TORBOX_API_KEY
  *   CLOUDTORRENT_PASSWORD
- *
- * Keep these values in Cloudflare Secrets, never in frontend files.
+ * Keep secrets out of frontend files.
  */
 const FRONTEND_ORIGIN = "https://ricsnotahacker.github.io";
 const TORBOX_BASE = "https://api.torbox.app/v1/api";
 
 export default {
   async fetch(request, env) {
+    const url = new URL(request.url);
     const origin = request.headers.get("Origin") || "";
     const corsHeaders = {
       "Access-Control-Allow-Origin": FRONTEND_ORIGIN,
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-CloudTorrent-Password",
+      "Access-Control-Allow-Headers": "Content-Type, X-CloudTorrent-Password",
       "Vary": "Origin",
       "Cache-Control": "no-store"
     };
     const respond = (data, status = 200) => new Response(JSON.stringify(data), {
-      status,
-      headers: { ...corsHeaders, "Content-Type": "application/json; charset=utf-8" }
+      status, headers: { ...corsHeaders, "Content-Type": "application/json; charset=utf-8" }
     });
 
-    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
-
-    const url = new URL(request.url);
-    if (url.pathname === "/api/status" && request.method === "GET") {
-      return respond({ ok: true, service: "CloudTorrent API" });
+    if (request.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: corsHeaders });
     }
+    if (origin && origin !== FRONTEND_ORIGIN) return respond({ ok: false, error: "Origin not allowed." }, 403);
 
-    if (origin !== FRONTEND_ORIGIN) return respond({ ok: false, error: "Origin not allowed" }, 403);
+    if (url.pathname === "/api/status" && request.method === "GET") {
+      return respond({
+        ok: true,
+        service: "CloudTorrent API",
+        torboxConfigured: Boolean(env.TORBOX_API_KEY),
+        passwordConfigured: Boolean(env.CLOUDTORRENT_PASSWORD)
+      });
+    }
 
     if (url.pathname === "/api/login" && request.method === "POST") {
       const body = await request.json().catch(() => ({}));
-      if (!env.CLOUDTORRENT_PASSWORD || typeof body.password !== "string" ||
-          body.password !== env.CLOUDTORRENT_PASSWORD) {
+      if (!env.CLOUDTORRENT_PASSWORD) return respond({ ok: false, error: "CLOUDTORRENT_PASSWORD is not configured in Cloudflare." }, 503);
+      if (typeof body.password !== "string" || body.password !== env.CLOUDTORRENT_PASSWORD) {
         return respond({ ok: false, error: "Invalid CloudTorrent password." }, 401);
       }
       if (!env.TORBOX_API_KEY) return respond({ ok: false, error: "TORBOX_API_KEY is not configured in Cloudflare." }, 503);
@@ -52,11 +56,12 @@ export default {
     try {
       if (url.pathname === "/api/torrents" && request.method === "POST") {
         const body = await request.json().catch(() => ({}));
-        if (typeof body.magnet !== "string" || !body.magnet.startsWith("magnet:?")) {
-          return respond({ ok: false, error: "A valid magnet link is required." }, 400);
+        const magnet = typeof body.magnet === "string" ? body.magnet.trim() : "";
+        if (!/^magnet:\?/i.test(magnet) || !/([?&])xt=urn:(btih|btmh):/i.test(magnet)) {
+          return respond({ ok: false, error: "A valid magnet link with a torrent identifier is required." }, 400);
         }
         const form = new FormData();
-        form.set("magnet", body.magnet);
+        form.set("magnet", magnet);
         form.set("seed", "1");
         const upstream = await fetch(`${TORBOX_BASE}/torrents/createtorrent`, {
           method: "POST",
@@ -65,7 +70,7 @@ export default {
         });
         const result = await upstream.json().catch(() => ({}));
         if (!upstream.ok || result.success === false) {
-          return respond({ ok: false, error: safeMessage(result, "TorBox rejected the torrent."), details: result.error || result.detail || undefined }, upstream.status >= 400 ? upstream.status : 502);
+          return respond({ ok: false, error: safeMessage(result, `TorBox rejected the torrent (HTTP ${upstream.status}).`) }, upstream.status >= 400 ? upstream.status : 502);
         }
         return respond({ ok: true, message: "Torrent submitted to TorBox.", torrent: result.data || result });
       }
@@ -77,8 +82,12 @@ export default {
           headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}` }
         });
         const result = await upstream.json().catch(() => ({}));
-        if (!upstream.ok || result.success === false) return respond({ ok: false, error: safeMessage(result, "Could not retrieve torrents from TorBox.") }, upstream.status >= 400 ? upstream.status : 502);
-        const list = Array.isArray(result.data) ? result.data : (Array.isArray(result) ? result : []);
+        if (!upstream.ok || result.success === false) {
+          return respond({ ok: false, error: safeMessage(result, `Could not retrieve torrents from TorBox (HTTP ${upstream.status}).`) }, upstream.status >= 400 ? upstream.status : 502);
+        }
+        const list = Array.isArray(result.data) ? result.data :
+          Array.isArray(result.data?.torrents) ? result.data.torrents :
+          Array.isArray(result) ? result : [];
         return respond({ ok: true, torrents: list });
       }
 
@@ -91,20 +100,23 @@ export default {
           headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}` }
         });
         const result = await upstream.json().catch(() => ({}));
-        if (!upstream.ok || result.success === false) return respond({ ok: false, error: safeMessage(result, "Could not retrieve files from TorBox.") }, upstream.status >= 400 ? upstream.status : 502);
-        const torrents = Array.isArray(result.data) ? result.data : (result.data ? [result.data] : []);
+        if (!upstream.ok || result.success === false) {
+          return respond({ ok: false, error: safeMessage(result, `Could not retrieve files from TorBox (HTTP ${upstream.status}).`) }, upstream.status >= 400 ? upstream.status : 502);
+        }
+        const torrents = Array.isArray(result.data) ? result.data :
+          result.data && typeof result.data === "object" ? [result.data] : [];
         const files = [];
         for (const torrent of torrents) {
           const tid = String(torrent.id ?? torrent.torrent_id ?? "");
           if (torrentId && tid !== torrentId) continue;
           const items = Array.isArray(torrent.files) ? torrent.files : [];
           for (const file of items) {
+            const id = file.id ?? file.file_id;
+            if (id === undefined || id === null) continue;
             files.push({
-              id: String(file.id ?? file.file_id ?? ""),
-              torrentId: tid,
-              name: file.name || file.short_name || `File ${file.id ?? ""}`,
-              size: Number(file.size || 0),
-              itemCount: 0
+              id: String(id), torrentId: tid,
+              name: file.name || file.short_name || `File ${id}`,
+              size: Number(file.size || 0), itemCount: 0
             });
           }
         }
@@ -120,21 +132,27 @@ export default {
         const downloadUrl = new URL(`${TORBOX_BASE}/torrents/requestdl`);
         downloadUrl.searchParams.set("torrent_id", torrentId);
         downloadUrl.searchParams.set("file_id", fileId);
+        // TorBox accepts the API token for this endpoint; it is sent server-side only.
         downloadUrl.searchParams.set("token", env.TORBOX_API_KEY);
-        const upstream = await fetch(downloadUrl, { headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}` } });
+        const upstream = await fetch(downloadUrl, {
+          headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}` }
+        });
         const result = await upstream.json().catch(() => null);
-        if (!upstream.ok) return respond({ ok: false, error: safeMessage(result, "TorBox could not create a download link.") }, upstream.status);
+        if (!upstream.ok || result?.success === false) {
+          return respond({ ok: false, error: safeMessage(result, `TorBox could not create a download link (HTTP ${upstream.status}).`) }, upstream.status >= 400 ? upstream.status : 502);
+        }
         const link = result?.data;
         const downloadLink = typeof link === "string" ? link : (link?.url || link?.download_url || result?.url);
-        if (!downloadLink || typeof downloadLink !== "string") {
-          return respond({ ok: false, error: safeMessage(result, "TorBox did not return a download URL.") }, 502);
+        if (!downloadLink || typeof downloadLink !== "string" || !/^https?:\/\//i.test(downloadLink)) {
+          return respond({ ok: false, error: safeMessage(result, "TorBox did not return a valid download URL.") }, 502);
         }
         return respond({ ok: true, url: downloadLink });
       }
 
       return respond({ ok: false, error: "Not found." }, 404);
     } catch (error) {
-      return respond({ ok: false, error: "Unexpected backend error. Check the Worker logs." }, 500);
+      // Do not leak secrets or raw upstream responses in client-facing errors.
+      return respond({ ok: false, error: "Unexpected backend error. Check the Cloudflare Worker logs." }, 500);
     }
   }
 };
